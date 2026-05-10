@@ -85,16 +85,12 @@
             height: 48px;
             border-radius: 11px;
             flex-shrink: 0;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-size: 1.5rem;
+            overflow: hidden;
         }
-        .app-icon-vitadatum {
-            background: linear-gradient(135deg, #1a7aff, #34c759);
-        }
-        .app-icon-huurprijscheck {
-            background: linear-gradient(135deg, #ff9500, #ff3b30);
+        .app-icon img {
+            width: 100%;
+            height: 100%;
+            display: block;
         }
         .app-info {
             text-align: left;
@@ -158,14 +154,14 @@
         <p class="tagline">Apps die je data respecteren</p>
         <div class="apps">
             <a href="https://spookwerk.app/apps/vitadatum/" class="app-card">
-                <div class="app-icon app-icon-vitadatum">&#9829;</div>
+                <div class="app-icon"><img src="apps/vitadatum/icon.png" alt="Vitadatum app icon"></div>
                 <div class="app-info">
                     <div class="app-name">Vitadatum <span class="app-badge">Binnenkort</span></div>
                     <div class="app-desc">Exporteer je Apple Health data naar JSON en CSV</div>
                 </div>
             </a>
             <a href="https://spookwerk.app/apps/huurprijscheck/" class="app-card">
-                <div class="app-icon app-icon-huurprijscheck">&#8962;</div>
+                <div class="app-icon"><img src="apps/huurprijscheck/icon.png" alt="Huurprijscheck app icon"></div>
                 <div class="app-info">
                     <div class="app-name">Huurprijscheck <span class="app-badge">Binnenkort</span></div>
                     <div class="app-desc">Bereken de maximale huurprijs volgens het puntensysteem</div>

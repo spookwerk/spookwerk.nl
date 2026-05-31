@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024" role="img" aria-label="Spookwerk">
+  <rect width="1024" height="1024" fill="#0c0e13"/>
+  <g transform="translate(66.1,288) scale(5.6)">
+    <circle cx="40" cy="40" r="32.25" fill="none" stroke="#ece7da" stroke-width="1.5"/>
+    <circle cx="40" cy="40" r="28.5" fill="#ece7da"/>
+    <circle cx="117" cy="40" r="29.25" fill="none" stroke="#ece7da" stroke-width="12"/>
+  </g>
+</svg>

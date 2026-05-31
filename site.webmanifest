@@ -1,0 +1,19 @@
+{
+  "name": "Spookwerk",
+  "short_name": "Spookwerk",
+  "icons": [
+    {
+      "src": "/icon-192.png",
+      "type": "image/png",
+      "sizes": "192x192"
+    },
+    {
+      "src": "/icon-512.png",
+      "type": "image/png",
+      "sizes": "512x512"
+    }
+  ],
+  "theme_color": "#0c0e13",
+  "background_color": "#0c0e13",
+  "display": "standalone"
+}

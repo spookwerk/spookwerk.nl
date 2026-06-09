@@ -75,17 +75,12 @@ $sigOk = $provided !== '' && (
 
 if (!$sigOk) {
     http_response_code(401);
-    // Log the raw body on reject too (temporarily) so we capture Apple's real
-    // payload shape even when verification fails. No secrets are in the body.
     $asc_log('REJECT: bad/missing signature. provided=' . substr($provided, 0, 24)
-        . '… bodylen=' . strlen($rawBody) . ' body=' . $rawBody);
+        . '… bodylen=' . strlen($rawBody));
     exit;
 }
 
 // ---- 4. Parse payload (defensive — confirm exact shape on first delivery) -----
-// Always log the raw body initially so we learn Apple's real field names.
-$asc_log('OK-SIG raw=' . $rawBody);
-
 $payload  = json_decode($rawBody, true);
 // Apple's envelope: { "data": { "type": "<camelCase>", "attributes": {...} } }.
 // Ping deliveries have type "webhookPingCreated". Since this endpoint is
@@ -99,6 +94,11 @@ if ($dataType === '' || stripos($dataType, 'ping') !== false) {
     $asc_log('IGNORE type=' . $dataType);
     exit;
 }
+
+// Real (non-ping) state-change event. Log the raw body ONLY for these (rare)
+// until the first one confirms Apple's exact attribute field names — then this
+// line and the attribute-dump fallback below can be tightened/removed.
+$asc_log('STATE-CHANGE raw=' . $rawBody);
 
 // Best-effort field extraction for a useful message; fall back gracefully.
 $dig = function (array $a, array $keys) {

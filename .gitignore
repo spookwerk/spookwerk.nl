@@ -1,1 +1,6 @@
 .DS_Store
+
+# ASC webhook secrets — the real secrets file must NEVER be committed.
+# Only the *.example.php template belongs in the repo.
+hooks/asc-webhook-secrets.php
+asc-webhook-secrets.php

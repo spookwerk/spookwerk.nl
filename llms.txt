@@ -1,0 +1,15 @@
+# Spookwerk
+
+> Spookwerk is an app studio in the Netherlands building privacy-first iOS apps. This is the Dutch-market site; the main hub with app pages, support, and the blog is at https://spookwerk.app/.
+
+## Pages
+
+- [Home (Nederlands)](https://spookwerk.nl/): Dutch-language landing page.
+- [Home (English)](https://spookwerk.nl/en/): English-language landing page.
+
+## Company
+
+- Legal name: Spookwerk (sole proprietorship, Netherlands — KvK 42035025)
+- Address: De Nieuwe Erven 3, Unit 14531, 5431NV Cuijk, Netherlands
+- Contact: info@spookwerk.nl
+- Main site: https://spookwerk.app/

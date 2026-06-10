@@ -26,7 +26,7 @@ X_DEFAULT = f"{SITE}/"                   # Dutch-primary site: x-default -> NL p
 TWIN = {"index.html": "en/index.html", "en/index.html": "index.html"}
 
 OG_REQUIRED = ["og:type", "og:title", "og:description", "og:url",
-               "og:image", "og:site_name"]
+               "og:image", "og:site_name", "og:locale", "og:locale:alternate"]
 TW_REQUIRED = ["twitter:card", "twitter:title", "twitter:description",
                "twitter:image"]
 

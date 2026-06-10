@@ -33,13 +33,15 @@ def page(canonical, locale, *, alts=None, drop=None, org=None, raw=None):
     if "description" not in drop:
         L.append('<meta name="description" content="D">')
     if "og" not in drop:
+        loc_alt = "en_US" if locale == "nl_NL" else "nl_NL"
         L += ['<meta property="og:type" content="website">',
               '<meta property="og:title" content="Spookwerk">',
               '<meta property="og:description" content="D">',
               f'<meta property="og:url" content="{canonical}">',
               f'<meta property="og:image" content="{SITE}/og/default.png">',
               '<meta property="og:site_name" content="Spookwerk">',
-              f'<meta property="og:locale" content="{locale}">']
+              f'<meta property="og:locale" content="{locale}">',
+              f'<meta property="og:locale:alternate" content="{loc_alt}">']
     if "tw" not in drop:
         L += ['<meta name="twitter:card" content="summary_large_image">',
               '<meta name="twitter:title" content="Spookwerk">',

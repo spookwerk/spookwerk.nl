@@ -11,7 +11,7 @@ from xml.sax.saxutils import escape
 from html.parser import HTMLParser
 from pathlib import Path
 
-SKIP_DIRS = {"tools", "hooks"}  # never deployed pages (hooks/ = PHP webhook)
+SKIP_DIRS = {"tools", "hooks", ".git"}  # never deployed pages (hooks/ = PHP webhook)
 
 SITE = "https://spookwerk.nl"
 # The brand entity is anchored on spookwerk.app (shared-entity decision, E §2)

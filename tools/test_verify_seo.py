@@ -109,7 +109,24 @@ class T(unittest.TestCase):
 
     def test_missing_hreflang_fails(self):
         self.s.write("index.html", page(f"{SITE}/", "nl_NL", alts=[]))
-        self.fails_with("hreflang")
+        self.fails_with("mandatory")
+
+    def test_missing_og_locale_fails(self):
+        html = page(f"{SITE}/", "nl_NL").replace(
+            '<meta property="og:locale" content="nl_NL">\n', "")
+        self.s.write("index.html", html)
+        self.fails_with("og:locale")
+
+    def test_missing_og_locale_alternate_fails(self):
+        html = page(f"{SITE}/", "nl_NL").replace(
+            '<meta property="og:locale:alternate" content="en_US">', "")
+        self.s.write("index.html", html)
+        self.fails_with("og:locale:alternate")
+
+    def test_logo_must_be_app_absolute_url(self):
+        org = dict(ORG, logo="/logo.png")
+        self.s.write("index.html", page(f"{SITE}/", "nl_NL", org=org))
+        self.fails_with("logo")
 
     def test_missing_x_default_fails(self):
         alts = [("nl", f"{SITE}/"), ("en", f"{SITE}/en/")]

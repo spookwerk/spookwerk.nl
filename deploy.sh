@@ -36,6 +36,7 @@ FILES=(
   icon-512.png
   site.webmanifest
   wordmark.svg
+  wordmark-light.svg
   apps/huurscan/icon.png
   apps/vitadatum/icon.png
   hooks/asc.php
@@ -47,7 +48,7 @@ done
 
 echo "== smoke check =="
 fail=0
-for path in / /en/ /sitemap.xml /robots.txt /llms.txt; do
+for path in / /en/ /sitemap.xml /robots.txt /llms.txt /wordmark-light.svg; do
   code=$(curl -s -o /dev/null -w '%{http_code}' "https://spookwerk.nl$path")
   echo "  $code https://spookwerk.nl$path"
   [ "$code" = "200" ] || fail=1

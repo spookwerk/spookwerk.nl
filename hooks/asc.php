@@ -5,9 +5,15 @@
  * Spookwerk / The Office task #333.
  * Design: The Office docs/superpowers/specs/2026-06-09-asc-webhook-pushover-relay-design.md
  *
- * Apple ASC POSTs a signed payload here when an app's review/version state
- * changes (APP_STORE_VERSION_STATE_CHANGED). We verify the HMAC-SHA256
- * signature, then relay a human-readable message to Pushover.
+ * Apple ASC POSTs a signed payload here when an app's version/review state
+ * changes (event APP_STORE_VERSION_APP_VERSION_STATE_UPDATED). We verify the
+ * HMAC-SHA256 signature, then relay a human-readable message to Pushover.
+ *
+ * The app name comes from a ?app=<Name> query param on the webhook URL, set per
+ * app when registering the webhook in ASC (ASC webhooks are one-app-each, so
+ * each app's URL carries its own name, e.g. .../asc.php?app=HuurScan). This is
+ * deterministic and independent of Apple's (still-evolving) payload shape, and
+ * it lets even a test PING name the app it came from.
  *
  * This file is PUBLIC (committed to the public spookwerk.nl repo). It contains
  * NO secrets. Secrets live in a separate file ABOVE the web root, loaded at
@@ -47,24 +53,49 @@ foreach (['asc_webhook_secret', 'pushover_app_token', 'pushover_user_key'] as $k
     }
 }
 
+// ---- Pushover sender (shared by the ping + state-change paths) ----------------
+$sendPush = function (string $title, string $message) use ($cfg, $asc_log) {
+    $post = http_build_query([
+        'token'    => $cfg['pushover_app_token'],
+        'user'     => $cfg['pushover_user_key'],
+        'title'    => $title,
+        'message'  => $message,
+        'priority' => '0',
+    ]);
+    $ch = curl_init('https://api.pushover.net/1/messages.json');
+    curl_setopt_array($ch, [
+        CURLOPT_POST           => true,
+        CURLOPT_POSTFIELDS     => $post,
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_TIMEOUT        => 10,
+        CURLOPT_CONNECTTIMEOUT => 5,
+    ]);
+    $resp     = curl_exec($ch);
+    $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    $curlErr  = curl_error($ch);
+    curl_close($ch);
+    if ($resp === false || $httpCode < 200 || $httpCode >= 300) {
+        $asc_log('PUSHOVER-FAIL http=' . $httpCode . ' err=' . $curlErr
+            . ' resp=' . substr((string) $resp, 0, 300) . ' msg=' . $message);
+        return false;
+    }
+    $asc_log('PUSHOVER-OK msg=' . $message);
+    return true;
+};
+
 // ---- 2. Read RAW body (HMAC is over raw bytes) -------------------------------
 $rawBody = file_get_contents('php://input');
 if ($rawBody === false) { $rawBody = ''; }
 
 // ---- 3. Verify X-Apple-SIGNATURE (HMAC-SHA256, constant-time) -----------------
-// PHP exposes "X-Apple-SIGNATURE" as HTTP_X_APPLE_SIGNATURE.
-// Apple sends it as "hmacsha256=<hexdigest>" — strip the algorithm prefix.
-// (The digest is hex, which never contains '=', so splitting on the first '='
-// is safe and yields the bare signature.)
+// Apple sends "X-Apple-SIGNATURE: hmacsha256=<digest>" (PHP: HTTP_X_APPLE_SIGNATURE).
+// Strip the algorithm prefix; tolerate hex OR base64 of the same HMAC (both
+// require the secret, so accepting both doesn't weaken security).
 $provided = trim($_SERVER['HTTP_X_APPLE_SIGNATURE'] ?? '');
 if (($eqPos = strpos($provided, '=')) !== false) {
     $provided = substr($provided, $eqPos + 1);
 }
-$macRaw   = hash_hmac('sha256', $rawBody, $cfg['asc_webhook_secret'], true);
-// Tolerate either hex or base64 encoding of the SAME HMAC — accepting both does
-// not weaken security (both require the secret); it just avoids an encoding
-// mismatch silently failing verification. We log which form matched so we can
-// tighten to the exact one Apple uses after the first real delivery.
+$macRaw    = hash_hmac('sha256', $rawBody, $cfg['asc_webhook_secret'], true);
 $expectHex = hash_hmac('sha256', $rawBody, $cfg['asc_webhook_secret']); // hex
 $expectB64 = base64_encode($macRaw);
 
@@ -80,27 +111,32 @@ if (!$sigOk) {
     exit;
 }
 
-// ---- 4. Parse payload (defensive — confirm exact shape on first delivery) -----
+// ---- 4. Identify the app + the event -----------------------------------------
+// App name: primary source is the ?app=<Name> query param on the webhook URL
+// (each app's webhook carries its own, e.g. ?app=HuurScan). Deterministic and
+// independent of Apple's payload shape; used by BOTH the ping + state-change paths.
+$appName  = isset($_GET['app']) ? trim((string) $_GET['app']) : '';
+
 $payload  = json_decode($rawBody, true);
-// Apple's envelope: { "data": { "type": "<camelCase>", "attributes": {...} } }.
-// Ping deliveries have type "webhookPingCreated". Since this endpoint is
-// subscribed to ONLY the APP_STORE_VERSION_STATE_CHANGED event, any non-ping
-// delivery IS the state change we care about — so we don't need to match an
-// exact (still-unconfirmed) camelCase type string. Ignore pings + empties.
 $dataType = is_array($payload) ? (string) ($payload['data']['type'] ?? '') : '';
 
+// ---- 4a. Ping / test deliveries → confirm the relay with a Pushover ----------
+// ASC's "Test" button (and Apple's periodic health pings) deliver a ping event.
+// We notify on these too, so a Test gives visible end-to-end proof the relay is
+// alive (previously these were silently ignored).
 if ($dataType === '' || stripos($dataType, 'ping') !== false) {
+    $who = $appName !== '' ? $appName : 'App Store Connect';
+    $sendPush($who . ' — webhook test', '🔔 ASC webhook ping received — the relay is alive.');
+    $asc_log('PING type=' . $dataType . ' app=' . $appName);
     http_response_code(200);
-    $asc_log('IGNORE type=' . $dataType);
+    echo 'ok';
     exit;
 }
 
-// Real (non-ping) state-change event. Log the raw body ONLY for these (rare)
-// until the first one confirms Apple's exact attribute field names — then this
-// line and the attribute-dump fallback below can be tightened/removed.
-$asc_log('STATE-CHANGE raw=' . $rawBody);
+// ---- 4b. Real state-change event ---------------------------------------------
+// Log the raw body until Apple's exact attribute field names are confirmed.
+$asc_log('STATE-CHANGE app=' . $appName . ' raw=' . $rawBody);
 
-// Best-effort field extraction for a useful message; fall back gracefully.
 $dig = function (array $a, array $keys) {
     foreach ($keys as $path) {
         $cur = $a; $ok = true;
@@ -113,9 +149,12 @@ $dig = function (array $a, array $keys) {
     return '';
 };
 
-$appName  = is_array($payload) ? $dig($payload, [
-    'data.attributes.appName', 'appName', 'data.attributes.app.name', 'app.name',
-]) : '';
+// Fall back to a payload dig for the app name only if the URL didn't carry it.
+if ($appName === '' && is_array($payload)) {
+    $appName = $dig($payload, [
+        'data.attributes.appName', 'appName', 'data.attributes.app.name', 'app.name',
+    ]);
+}
 $newState = is_array($payload) ? $dig($payload, [
     'data.attributes.newValue', 'data.attributes.appStoreState', 'newValue',
     'data.attributes.state', 'state',
@@ -127,7 +166,7 @@ $version  = is_array($payload) ? $dig($payload, [
     'data.attributes.versionString', 'versionString', 'data.attributes.version',
 ]) : '';
 
-// ---- 5. Compose + send Pushover ----------------------------------------------
+// ---- 5. Compose + send -------------------------------------------------------
 $titleApp = $appName !== '' ? $appName : 'App Store Connect';
 $title    = $titleApp . ' — review state';
 
@@ -138,8 +177,8 @@ if ($oldState !== '' && $newState !== '') {
 } elseif ($newState !== '') {
     $bodyParts[] = $newState;
 } else {
-    // Field names not yet confirmed for the real event — dump the attributes
-    // so the push is still useful. Tighten once we've seen one live transition.
+    // Field names not yet confirmed for the real event — dump the attributes so
+    // the push is still useful. Tighten once we've seen one live transition.
     $attrs = (is_array($payload) && isset($payload['data']['attributes'])
         && is_array($payload['data']['attributes'])) ? $payload['data']['attributes'] : [];
     $compact = $attrs ? json_encode($attrs, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) : '';
@@ -148,35 +187,7 @@ if ($oldState !== '' && $newState !== '') {
 }
 $message = implode('  ', $bodyParts);
 
-$post = http_build_query([
-    'token'    => $cfg['pushover_app_token'],
-    'user'     => $cfg['pushover_user_key'],
-    'title'    => $title,
-    'message'  => $message,
-    'priority' => '0',
-]);
-
-$ch = curl_init('https://api.pushover.net/1/messages.json');
-curl_setopt_array($ch, [
-    CURLOPT_POST           => true,
-    CURLOPT_POSTFIELDS     => $post,
-    CURLOPT_RETURNTRANSFER => true,
-    CURLOPT_TIMEOUT        => 10,
-    CURLOPT_CONNECTTIMEOUT => 5,
-]);
-$resp     = curl_exec($ch);
-$httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-$curlErr  = curl_error($ch);
-curl_close($ch);
-
-if ($resp === false || $httpCode < 200 || $httpCode >= 300) {
-    // Apple gets a 200 regardless (the event WAS valid) — we don't want retries
-    // hammering us when the failure is our Pushover leg. Log it for follow-up.
-    $asc_log('PUSHOVER-FAIL http=' . $httpCode . ' err=' . $curlErr
-        . ' resp=' . substr((string) $resp, 0, 300) . ' msg=' . $message);
-} else {
-    $asc_log('PUSHOVER-OK msg=' . $message);
-}
+$sendPush($title, $message);
 
 http_response_code(200);
 echo 'ok';

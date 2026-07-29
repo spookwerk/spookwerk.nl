@@ -1,0 +1,24 @@
+# spookwerk.nl — Apache overrides (TransIP webhosting)
+#
+# Single purpose: send www.spookwerk.nl to the apex with a 301, so the site
+# is served from exactly one hostname. Until this existed, www returned 200
+# and served the full site as a duplicate host, held together only by the
+# canonical tag in the HTML.
+#
+# Deliberately does NOT touch DirectoryIndex. Apache on this host prefers
+# index.php over index.html, and the original TransIP placeholder is still
+# parked at ~/www/index.php.bak — leave that mechanism exactly as it is.
+#
+# HTTPS is already forced by TransIP ("Forcing HTTPS" in the control panel),
+# so this rule targets https:// directly: https://www is a single hop.
+# http://www takes two — TransIP's HTTPS forcing runs at vhost level, before
+# .htaccess is consulted, so it fires first and this file cannot collapse it.
+# Verified live 2026-07-29.
+#
+# ROLLBACK: ssh spookw.ssh.transip.me 'rm www/.htaccess'
+
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+    RewriteCond %{HTTP_HOST} ^www\.spookwerk\.nl$ [NC]
+    RewriteRule ^(.*)$ https://spookwerk.nl/$1 [R=301,L]
+</IfModule>

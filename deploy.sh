@@ -17,7 +17,7 @@ echo "== verify =="
 python3 tools/verify-seo.py
 
 echo "== ensure target dirs =="
-ssh "$HOST" 'mkdir -p www/og www/hooks www/en www/apps/huurscan www/apps/vitadatum'
+ssh "$HOST" 'mkdir -p www/og www/hooks www/en www/apps/huurscan www/apps/vitadatum www/apps/shruta'
 
 echo "== upload (explicit allowlist) =="
 FILES=(
@@ -40,6 +40,7 @@ FILES=(
   wordmark-light.svg
   apps/huurscan/icon.png
   apps/vitadatum/icon.png
+  apps/shruta/icon.png
   hooks/asc.php
 )
 for f in "${FILES[@]}"; do

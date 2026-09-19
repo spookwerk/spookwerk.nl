@@ -44,6 +44,7 @@ FILES=(
   apps/cube-superfly/icon.png
   hooks/asc.php
   usage/api.php
+  usage/.htaccess
 )
 for f in "${FILES[@]}"; do
   scp -q "$f" "$HOST:www/$f"

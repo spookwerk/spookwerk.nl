@@ -1,0 +1,7 @@
+# Apache under CGI/FPM drops the Authorization header before PHP runs; re-expose
+# it (lands as HTTP_AUTHORIZATION or REDIRECT_HTTP_AUTHORIZATION, api.php reads both).
+<IfModule mod_rewrite.c>
+RewriteEngine On
+RewriteCond %{HTTP:Authorization} .
+RewriteRule .* - [E=HTTP_AUTHORIZATION:%{HTTP:Authorization}]
+</IfModule>

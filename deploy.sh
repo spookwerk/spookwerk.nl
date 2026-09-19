@@ -45,6 +45,7 @@ FILES=(
   hooks/asc.php
   usage/api.php
   usage/.htaccess
+  usage/index.html
 )
 for f in "${FILES[@]}"; do
   scp -q "$f" "$HOST:www/$f"

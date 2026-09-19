@@ -1,0 +1,388 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#0A0F08">
+<!-- Deployed on a public host but not part of the site: keep it out of the
+     indexers, and out of the SEO verifier and sitemap, which skip noindex. -->
+<meta name="robots" content="noindex, nofollow">
+<title>Usage</title>
+<!-- Empty data URI: stops the browser's automatic /favicon.ico probe, which
+     would otherwise be the one network request this page does not control. -->
+<link rel="icon" href="data:,">
+<style>
+  /* Palette lifted verbatim from FalloutTheme.swift so the phone and the Mac
+     app read as the same instrument. tertiary is the one deviation: the app's
+     #0A8000 is near-invisible on a phone in daylight, so it is lifted a stop. */
+  :root{
+    --primary:#14FF00; --warning:#FFB000; --danger:#FF3300;
+    --tertiary:#12A800; --inactive:#1A2818; --muted:#7E8C7C;
+    --bg:#0A0F08; --panel:#0F1E0D; --border:rgba(10,128,0,.5);
+    --seg-w:8px; --bar-w:89px;   /* app metric: 10 segments x 8px + 9 gaps x 1px */
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;background:var(--bg)}
+  body{
+    color:var(--primary);
+    font:400 13px/1.3 ui-monospace,SFMono-Regular,Menlo,Monaco,"Courier New",monospace;
+    padding:10px calc(10px + env(safe-area-inset-right)) calc(10px + env(safe-area-inset-bottom)) calc(10px + env(safe-area-inset-left));
+    -webkit-text-size-adjust:100%; -webkit-font-smoothing:antialiased;
+  }
+  .row{background:var(--panel);border:1px solid var(--border);border-radius:4px;padding:8px 10px;margin-bottom:8px}
+  .rowhead{display:flex;align-items:center;gap:7px;margin-bottom:7px}
+  .dot{width:7px;height:7px;border-radius:50%;background:var(--primary);flex:none;box-shadow:0 0 4px var(--primary)}
+  .dot.bad{background:var(--danger);box-shadow:0 0 4px var(--danger)}
+  .label{font-size:12px;letter-spacing:.09em;flex:none}
+  .sub{font-size:10px;color:var(--tertiary);flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .age{font-size:10px;flex:none;white-space:nowrap}
+  .stale{font-size:10px;color:var(--danger);flex:none}
+  .nodata{font-size:11px;color:var(--danger);padding:6px 0 2px}
+  /* Mobile first: panels stack. Side by side once there is room for them. */
+  .panels{display:flex;flex-direction:column;gap:7px}
+  @media (min-width:480px){ .panels{flex-direction:row;flex-wrap:wrap;gap:8px 10px;align-items:center} }
+  .panel{display:flex;align-items:center;gap:6px}
+  .ptitle{font-size:10px;color:var(--tertiary);width:50px;flex:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .bars{display:flex;flex-direction:column;gap:2px;flex:none;width:var(--bar-w)}
+  /* Time-elapsed bar. `ghost` keeps the 2px footprint without drawing anything,
+     so a panel with no resets_at does not sit 4px higher than its neighbours. */
+  .tbar{height:2px;border-radius:1px;background:rgba(20,255,0,.15)}
+  .tbar.ghost{background:transparent}
+  .tbar>i{display:block;height:2px;border-radius:1px;background:rgba(20,255,0,.5)}
+  .segs{display:flex;gap:1px}
+  .seg{width:var(--seg-w);height:10px;border-radius:1px;background:var(--inactive)}
+  .pct{font-size:11px;font-weight:500;width:32px;flex:none;text-align:right}
+  /* Fixed width, as in the app: without it a panel downstream shifts when the
+     string varies ("6:20pm" vs "SEP 22 3:00am") and the columns stop aligning. */
+  .reset{font-size:10px;color:var(--tertiary);white-space:nowrap;flex:none;width:84px}
+  footer{font-size:10px;color:var(--tertiary);padding:2px 2px 0}
+</style>
+</head>
+<body>
+<main id="rows"></main>
+<footer id="foot">loading</footer>
+<script>
+"use strict";
+
+// Top to bottom SWST, SWCC, BBCC. The Mac app stacks its rows bottom-up with
+// BBCC as the main row at the bottom; this is that same order, read downwards.
+var FEEDS = [
+  { id:"swst", file:"./swst.json", label:"SWST", sub:"Stanley · OpenAI Codex" },
+  { id:"swcc", file:"./swcc.json", label:"SWCC", sub:"Spookwerk · Claude" },
+  { id:"bbcc", file:"./bbcc.json", label:"BBCC", sub:"Work · Claude" }
+];
+
+// API mode: one endpoint next to this page answers for all three accounts at
+// once. Relative, so the same file works wherever the directory is mounted.
+var API_URL   = "./api.php?name=all";
+var TOKEN_KEY = "usage.readToken";
+
+var REFETCH_MS = 120000;           // poll cadence, same as UsageMonitor's timer
+var TICK_MS    = 30000;            // repaint-only cadence (bars + "ago" labels)
+var H5 = 5 * 3600 * 1000;          // 5-hour burst window
+var D7 = 7 * 24 * 3600 * 1000;     // 7-day weekly window
+var MON = ["JAN","FEB","MAR","APR","MAY","JUN","JUL","AUG","SEP","OCT","NOV","DEC"];
+
+var state = {};                    // feed id -> {ok, stats, checkedAt, stale}
+var lastOk = null;                 // timestamp of the last cycle that got data
+var footNote = null;               // {text, bad} replacing the "refreshed" line
+
+// --- parsing -------------------------------------------------------------
+
+// Port of UsageMonitor.parseDate: ISO8601 with or without fractional seconds,
+// Z or +00:00. JS only guarantees three fractional digits, while the feeds emit
+// six (".535532+00:00"), so trim before handing it to Date.parse.
+function parseDate(s){
+  if (!s || typeof s !== "string") return null;
+  var t = Date.parse(s.replace(/(\.\d{3})\d+/, "$1"));
+  return isNaN(t) ? null : new Date(t);
+}
+
+// Legacy window object {utilization, resets_at} -> panel data, or null when the
+// provider does not advertise that window at all.
+function legacyWindow(o){
+  if (!o || typeof o.utilization !== "number") return null;
+  return { pct: Math.trunc(o.utilization), at: parseDate(o.resets_at) };
+}
+
+function limitWindow(l){
+  return { pct: Math.trunc(l.percent), at: parseDate(l.resets_at) };
+}
+
+// 1:1 port of UsageMonitor.mapResponseToStats.
+function mapResponseToStats(r){
+  var s = { five:null, weekly:null, model:null };
+
+  // Legacy top-level fields — still emitted by the API (for now), and the only
+  // shape the pre-computed SWST feed has ever had.
+  s.five   = legacyWindow(r.five_hour);
+  s.weekly = legacyWindow(r.seven_day);
+
+  // Legacy per-model windows: opus, sonnet, haiku (all null on migrated accounts).
+  var legacyModels = [["seven_day_opus","OPUS"],["seven_day_sonnet","SONNET"],["seven_day_haiku","HAIKU"]];
+  for (var i = 0; i < legacyModels.length; i++){
+    var w = legacyWindow(r[legacyModels[i][0]]);
+    if (w){ w.name = legacyModels[i][1]; s.model = w; break; }
+  }
+
+  // New limits[] format (2026-07 rollout): authoritative when present — it
+  // overrides the legacy fields above so the panels keep working on the day
+  // Anthropic stops populating them.
+  if (Array.isArray(r.limits)){
+    var best = null;
+    for (var j = 0; j < r.limits.length; j++){
+      var l = r.limits[j];
+      if (l.kind === "session") s.five = limitWindow(l);
+      else if (l.kind === "weekly_all") s.weekly = limitWindow(l);
+      else if (l.kind === "weekly_scoped" && l.scope && l.scope.model && l.scope.model.display_name){
+        // Several model-scoped weeklies can coexist (e.g. "Fable"). Surface the
+        // fullest one — that is the cap the user hits first. Strict > keeps the
+        // first of a tie, matching Swift's max(by:).
+        if (!best || l.percent > best.percent) best = l;
+      }
+    }
+    if (best){
+      s.model = limitWindow(best);
+      s.model.name = String(best.scope.model.display_name).toUpperCase();
+    }
+  }
+  return s;
+}
+
+// --- formatting ----------------------------------------------------------
+
+// How far through the window we are, 0..1, derived from resets_at minus the
+// window duration. Null resets_at means we cannot know — no bar.
+function timeProgress(at, durMs){
+  if (!at) return null;
+  var start = at.getTime() - durMs;
+  return Math.min(Math.max((Date.now() - start) / durMs, 0), 1);
+}
+
+function fillColor(p){
+  return p >= 90 ? "var(--danger)" : p >= 70 ? "var(--warning)" : "var(--primary)";
+}
+
+// Today -> "4:20pm"; any other day -> "SEP 22 3:00am". Device-local, like the app.
+function formatResetTime(d){
+  if (!d) return "";
+  var h24 = d.getHours();
+  var t = (h24 % 12 === 0 ? 12 : h24 % 12) + ":" +
+          String(d.getMinutes()).padStart(2,"0") + (h24 < 12 ? "am" : "pm");
+  var now = new Date();
+  var today = d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth()
+              && d.getDate() === now.getDate();
+  return today ? t : MON[d.getMonth()] + " " + d.getDate() + " " + t;
+}
+
+function ageText(ms){
+  var m = Math.floor(ms / 60000);
+  if (m < 60) return m + "m ago";
+  var h = Math.floor(m / 60);
+  return h < 24 ? h + "h ago" : Math.floor(h / 24) + "d ago";
+}
+
+function ageColor(ms){
+  if (ms < 600000)  return "var(--primary)";   // under 10 min: live
+  if (ms < 3600000) return "var(--muted)";     // 10 min - 1 h: getting old
+  return "var(--danger)";                      // beyond 1 h: the collector is down
+}
+
+function hhmm(d){
+  return String(d.getHours()).padStart(2,"0") + ":" + String(d.getMinutes()).padStart(2,"0");
+}
+
+// --- rendering -----------------------------------------------------------
+
+function el(tag, cls, text){
+  var e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text != null) e.textContent = text;   // textContent: feed strings are data, not markup
+  return e;
+}
+
+// Mirrors CompactUsageStatPanel. `w` null renders the inert variant: same
+// footprint, empty segments, "--", no time bar — so columns stay aligned.
+function panel(title, w, durMs){
+  var p = el("div","panel");
+  p.append(el("div","ptitle",title));
+
+  var bars = el("div","bars");
+  var tp = w ? timeProgress(w.at, durMs) : null;
+  var tbar = el("div", tp === null ? "tbar ghost" : "tbar");
+  if (tp !== null){
+    var f = el("i");
+    f.style.width = (tp * 100).toFixed(2) + "%";
+    tbar.append(f);
+  }
+  bars.append(tbar);
+
+  var segs = el("div","segs");
+  for (var i = 1; i <= 10; i++){
+    var s = el("div","seg");
+    if (w && w.pct >= i * 10) s.style.background = fillColor(w.pct);   // segment i fills at i*10%
+    segs.append(s);
+  }
+  bars.append(segs);
+  p.append(bars);
+
+  var pct = el("div","pct", w ? w.pct + "%" : "--");
+  pct.style.color = w ? fillColor(w.pct) : "var(--tertiary)";
+  p.append(pct);
+  p.append(el("div","reset", w ? formatResetTime(w.at) : ""));
+  return p;
+}
+
+function renderRow(feed){
+  var st = state[feed.id];
+  var row = el("section","row");
+  var head = el("div","rowhead");
+  head.append(el("span", st && st.ok ? "dot" : "dot bad"));
+  head.append(el("span","label",feed.label));
+  head.append(el("span","sub",feed.sub));
+
+  if (st && st.ok && st.checkedAt){
+    var age = el("span","age");
+    var d = Date.now() - st.checkedAt.getTime();
+    age.textContent = "updated " + ageText(d);
+    age.style.color = ageColor(d);
+    head.append(age);
+  }
+  if (st && st.stale) head.append(el("span","stale","stale"));
+  row.append(head);
+
+  // Failed fetch or missing file: keep the label and drop the panels, so the
+  // layout does not jump when one collector dies.
+  if (!st || !st.ok){ row.append(el("div","nodata","no data")); return row; }
+
+  var panels = el("div","panels");
+  panels.append(panel("5HR", st.stats.five, H5));
+  panels.append(panel("WEEKLY", st.stats.weekly, D7));
+  // Model-scoped panel only exists when the provider names a model — an absent
+  // one has no title to render, so it is omitted rather than shown inert.
+  if (st.stats.model) panels.append(panel(st.stats.model.name, st.stats.model, D7));
+  row.append(panels);
+  return row;
+}
+
+function render(){
+  var root = document.getElementById("rows");
+  root.replaceChildren.apply(root, FEEDS.map(renderRow));
+  // One footer line, never two: a note (a failed fetch, a missing token) says
+  // more about the state of things than the time of the last good refresh.
+  var foot = document.getElementById("foot");
+  foot.textContent = footNote ? footNote.text
+                   : lastOk ? "refreshed " + hhmm(lastOk)
+                   : "no data yet";
+  foot.style.color = footNote && footNote.bad ? "var(--danger)" : "";
+}
+
+// --- fetching ------------------------------------------------------------
+
+// The read token travels in the fragment (#token=...), never the query string,
+// so it stays out of access logs and Referer headers; it only ever leaves again
+// as an Authorization header. First arrival is copied to localStorage, so a
+// bookmark that lost its fragment still reaches the API. Storage access throws
+// in some privacy modes, hence the try blocks.
+function readToken(){
+  var m = /(?:^|[#&])token=([^&]+)/.exec(location.hash);
+  var t = "";
+  // A malformed escape ("#token=%") makes decodeURIComponent throw, and this
+  // runs on the startup path — a throw here would cost us the timers below.
+  try { t = m ? decodeURIComponent(m[1]).trim() : ""; } catch (e) { t = ""; }
+  // Shape check only — the server is the authority on whether it is the right
+  // token. This just stops a junk fragment becoming an Authorization header.
+  if (/^[A-Za-z0-9._~+/=-]{16,256}$/.test(t)){
+    try { localStorage.setItem(TOKEN_KEY, t); } catch (e) {}
+    return t;
+  }
+  try { return localStorage.getItem(TOKEN_KEY) || null; } catch (e) { return null; }
+}
+
+// Both modes land here. `fallbackAt` is the transport's own idea of freshness,
+// used when the payload carries no checked_at: the file's mtime in file mode,
+// the envelope's received_at in API mode. (The BBCC feed is the one that has
+// always needed it — a different collector writes it.)
+function feedState(json, fallbackAt){
+  var checkedAt = parseDate(json.checked_at) || fallbackAt;
+  return {
+    ok: true,
+    stats: mapResponseToStats(json),
+    checkedAt: checkedAt && !isNaN(checkedAt.getTime()) ? checkedAt : null,
+    stale: json.stale === true
+  };
+}
+
+function load(feed){
+  return fetch(feed.file, { cache:"no-store" }).then(function(res){
+    if (!res.ok) throw new Error(feed.id + " HTTP " + res.status);
+    var lm = res.headers.get("Last-Modified");
+    return res.json().then(function(json){
+      state[feed.id] = feedState(json, lm ? new Date(lm) : null);
+      return true;
+    });
+  }).catch(function(){
+    state[feed.id] = { ok:false };
+    return false;
+  });
+}
+
+// File mode: three sibling JSON files, one fetch each, unchanged.
+function loadFiles(){
+  return Promise.all(FEEDS.map(load)).then(function(results){
+    if (results.some(Boolean)){ lastOk = new Date(); footNote = null; }
+    // Nothing answered and no token to try the API with: the likely cause is a
+    // bookmark that never carried the fragment, not three dead collectors.
+    else footNote = { text:"no token", bad:false };
+  });
+}
+
+// API mode: one request covers all three accounts. An account whose `data` is
+// null gets exactly the rendering a missing sibling file gets — label kept,
+// red dot, no panels.
+function loadApi(token){
+  return fetch(API_URL, { cache:"no-store", headers:{ "Authorization":"Bearer " + token } })
+    .then(function(res){
+      if (!res.ok){ var e = new Error("HTTP " + res.status); e.status = res.status; throw e; }
+      return res.json();
+    })
+    .then(function(env){
+      FEEDS.forEach(function(feed){
+        var slot = env ? env[feed.id] : null;
+        state[feed.id] = slot && slot.data
+          ? feedState(slot.data, parseDate(slot.received_at))
+          : { ok:false };
+      });
+      lastOk = new Date();
+      footNote = null;
+    })
+    .catch(function(err){
+      // A rotated token (401) or no network at all: the rows go dark together
+      // rather than half of them lying, and the footer says which it was.
+      FEEDS.forEach(function(feed){ state[feed.id] = { ok:false }; });
+      footNote = { text:"fetch failed: " + (err && err.status ? err.status : "network"), bad:true };
+    });
+}
+
+// Mode is decided per cycle, not once at load: a token can arrive later via the
+// fragment, and both modes share this one refresh path (timer, visibility).
+function cycle(){
+  var token = readToken();
+  return (token ? loadApi(token) : loadFiles()).then(render);
+}
+
+render();                        // paint the empty frame before the first fetch lands
+cycle();
+setInterval(cycle, REFETCH_MS);
+setInterval(render, TICK_MS);    // bars creep and ages age without refetching
+// Coming back to a home-screen shortcut hours later should not show stale paint.
+document.addEventListener("visibilitychange", function(){ if (!document.hidden) cycle(); });
+// Pasting a #token onto an already-open page switches modes there and then,
+// instead of at the far end of the 120 s timer.
+window.addEventListener("hashchange", cycle);
+</script>
+</body>
+</html>

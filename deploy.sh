@@ -17,7 +17,7 @@ echo "== verify =="
 python3 tools/verify-seo.py
 
 echo "== ensure target dirs =="
-ssh "$HOST" 'mkdir -p www/og www/hooks www/en www/apps/huurscan www/apps/vitadatum www/apps/shruta www/apps/cube-superfly'
+ssh "$HOST" 'mkdir -p www/og www/hooks www/en www/apps/huurscan www/apps/vitadatum www/apps/shruta www/apps/cube-superfly www/usage'
 
 echo "== upload (explicit allowlist) =="
 FILES=(
@@ -43,6 +43,7 @@ FILES=(
   apps/shruta/icon.png
   apps/cube-superfly/icon.png
   hooks/asc.php
+  usage/api.php
 )
 for f in "${FILES[@]}"; do
   scp -q "$f" "$HOST:www/$f"

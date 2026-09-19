@@ -58,12 +58,25 @@
   /* Fixed width, as in the app: without it a panel downstream shifts when the
      string varies ("6:20pm" vs "SEP 22 3:00am") and the columns stop aligning. */
   .reset{font-size:10px;color:var(--tertiary);white-space:nowrap;flex:none;width:84px}
-  footer{font-size:10px;color:var(--tertiary);padding:2px 2px 0}
+  footer{font-size:10px;color:var(--tertiary);padding:2px 2px 0;display:flex;align-items:center;justify-content:space-between;gap:8px}
+  #foot{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  /* Native <button> so Tab/Enter/Space work for free. Visually a slim pill
+     matching the row borders; ::before pads the real hit area out to a 44px
+     thumb target without inflating the visible box — a min-height here would
+     make it look chunky against the one-line footer it sits in. */
+  #refreshBtn{
+    position:relative; flex:none;
+    font:inherit; font-size:10px; line-height:1; color:inherit;
+    background:transparent; border:1px solid var(--border); border-radius:3px;
+    padding:4px 8px; cursor:pointer;
+  }
+  #refreshBtn::before{content:"";position:absolute;inset:-13px}
+  #refreshBtn:disabled{opacity:.5;cursor:default}
 </style>
 </head>
 <body>
 <main id="rows"></main>
-<footer id="foot">loading</footer>
+<footer><span id="foot">loading</span><button id="refreshBtn" type="button">refresh</button></footer>
 <script>
 "use strict";
 
@@ -82,13 +95,16 @@ var TOKEN_KEY = "usage.readToken";
 
 var REFETCH_MS = 120000;           // poll cadence, same as UsageMonitor's timer
 var TICK_MS    = 30000;            // repaint-only cadence (bars + "ago" labels)
+var STALE_MS   = 3 * 60 * 1000;    // footer turns red/"stale" once fetched data is this old
 var H5 = 5 * 3600 * 1000;          // 5-hour burst window
 var D7 = 7 * 24 * 3600 * 1000;     // 7-day weekly window
 var MON = ["JAN","FEB","MAR","APR","MAY","JUN","JUL","AUG","SEP","OCT","NOV","DEC"];
 
 var state = {};                    // feed id -> {ok, stats, checkedAt, stale}
-var lastOk = null;                 // timestamp of the last cycle that got data
-var footNote = null;               // {text, bad} replacing the "refreshed" line
+var lastFetchOK  = null;           // Date of the last cycle() that parsed at least one account
+var lastFetchTry = null;           // Date of the last cycle() attempt, success or failure
+var fetchInFlight = false;         // guards overlapping cycle() calls (button/timers/foreground)
+var footNote = null;               // {text, bad} replacing the "fetched" line
 
 // --- parsing -------------------------------------------------------------
 
@@ -271,13 +287,30 @@ function renderRow(feed){
 function render(){
   var root = document.getElementById("rows");
   root.replaceChildren.apply(root, FEEDS.map(renderRow));
-  // One footer line, never two: a note (a failed fetch, a missing token) says
-  // more about the state of things than the time of the last good refresh.
+
+  // One footer line, never two, in priority order: a fetch actually running
+  // beats everything (the refresh button needs to see its own effect); then a
+  // note (a failed fetch, a missing token) says more about the state of
+  // things than the time of the last good fetch; otherwise report that time,
+  // turning red once it is old enough that "fetched" would be a lie.
   var foot = document.getElementById("foot");
-  foot.textContent = footNote ? footNote.text
-                   : lastOk ? "refreshed " + hhmm(lastOk)
-                   : "no data yet";
-  foot.style.color = footNote && footNote.bad ? "var(--danger)" : "";
+  var staleAge = !lastFetchOK || (Date.now() - lastFetchOK.getTime()) >= STALE_MS;
+  if (fetchInFlight){
+    foot.textContent = "fetching…";
+    foot.style.color = "";
+  } else if (footNote){
+    foot.textContent = footNote.text;
+    foot.style.color = footNote.bad ? "var(--danger)" : "";
+  } else {
+    foot.textContent = lastFetchOK
+      ? "fetched " + hhmm(lastFetchOK) + (staleAge ? " · stale" : "")
+      : "never fetched";
+    foot.style.color = staleAge ? "var(--danger)" : "";
+  }
+
+  // Mirrors fetch state: no double-tapping a request that is already in flight.
+  var btn = document.getElementById("refreshBtn");
+  if (btn) btn.disabled = fetchInFlight;
 }
 
 // --- fetching ------------------------------------------------------------
@@ -333,7 +366,7 @@ function load(feed){
 // File mode: three sibling JSON files, one fetch each, unchanged.
 function loadFiles(){
   return Promise.all(FEEDS.map(load)).then(function(results){
-    if (results.some(Boolean)){ lastOk = new Date(); footNote = null; }
+    if (results.some(Boolean)){ lastFetchOK = new Date(); footNote = null; }
     // Nothing answered and no token to try the API with: the likely cause is a
     // bookmark that never carried the fragment, not three dead collectors.
     else footNote = { text:"no token", bad:false };
@@ -356,7 +389,7 @@ function loadApi(token){
           ? feedState(slot.data, parseDate(slot.received_at))
           : { ok:false };
       });
-      lastOk = new Date();
+      lastFetchOK = new Date();
       footNote = null;
     })
     .catch(function(err){
@@ -368,21 +401,62 @@ function loadApi(token){
 }
 
 // Mode is decided per cycle, not once at load: a token can arrive later via the
-// fragment, and both modes share this one refresh path (timer, visibility).
+// fragment, and both modes share this one refresh path (timer, visibility,
+// the refresh button).
 function cycle(){
+  // A second trigger while one is already in flight is ignored: the 120 s
+  // timer, the refresh button, and the foreground signals below can all land
+  // within milliseconds of each other, and overlapping fetches would race
+  // each other into `state`.
+  if (fetchInFlight) return Promise.resolve();
+  fetchInFlight = true;
+  lastFetchTry = new Date();
+  render();                        // show "fetching…" without waiting on the network
   var token = readToken();
-  return (token ? loadApi(token) : loadFiles()).then(render);
+  return (token ? loadApi(token) : loadFiles()).then(function(){
+    fetchInFlight = false;
+    render();
+  });
+}
+
+// visibilitychange, pageshow and focus are three different "the phone is back
+// in front of the user" signals and commonly fire within the same tick of
+// each other (e.g. unlocking into a bfcache restore also refocuses the
+// window) — skip the refetch when the last one already landed recently
+// rather than firing cycle() three times for one resume.
+function foregroundRefresh(){
+  if (lastFetchOK && Date.now() - lastFetchOK.getTime() < 10000) return;
+  cycle();
+}
+
+// iOS throttles/clamps timers for backgrounded tabs and home-screen PWAs, so
+// the 120 s setInterval(cycle, …) below can simply stop firing while the
+// page is out of view. The 30 s repaint tick keeps running more reliably, so
+// use it as a trip wire: if the last attempt is older than the cycle
+// interval itself, the timer above has stalled — kick one off from here.
+function tick(){
+  render();
+  if (!lastFetchTry || Date.now() - lastFetchTry.getTime() > REFETCH_MS) cycle();
 }
 
 render();                        // paint the empty frame before the first fetch lands
 cycle();
 setInterval(cycle, REFETCH_MS);
-setInterval(render, TICK_MS);    // bars creep and ages age without refetching
+setInterval(tick, TICK_MS);      // repaint (bars/ages/footer) + the self-heal check above
 // Coming back to a home-screen shortcut hours later should not show stale paint.
-document.addEventListener("visibilitychange", function(){ if (!document.hidden) cycle(); });
+document.addEventListener("visibilitychange", function(){ if (document.visibilityState === "visible") foregroundRefresh(); });
+// bfcache restores (iOS Safari back/forward) fire pageshow, not visibilitychange
+// and not a fresh script load — event.persisted marks the bfcache case, but the
+// data underneath a restored page can be stale either way, so both are treated
+// the same here.
+window.addEventListener("pageshow", foregroundRefresh);
+// Switching back from another app/tab is a window focus, which is exactly the
+// kind of background-to-foreground transition iOS throttles timers around.
+window.addEventListener("focus", foregroundRefresh);
 // Pasting a #token onto an already-open page switches modes there and then,
 // instead of at the far end of the 120 s timer.
 window.addEventListener("hashchange", cycle);
+document.getElementById("refreshBtn").addEventListener("click", cycle);
 </script>
 </body>
 </html>

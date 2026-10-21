@@ -1,7 +1,15 @@
 # Apache under CGI/FPM drops the Authorization header before PHP runs; re-expose
 # it (lands as HTTP_AUTHORIZATION or REDIRECT_HTTP_AUTHORIZATION, api.php reads both).
+#
+# This file declares its own RewriteEngine, so the docroot rules are NOT
+# inherited here: any rule the docroot .htaccess must enforce in /usage/
+# has to be repeated below.
 <IfModule mod_rewrite.c>
 RewriteEngine On
+# TEMPORARY 2026-10-21: refuse every PHP request (403) until TransIP serves
+# the PHP patched for the two critical CVEs announced on php.net 2026-10-20.
+# Same rule as the docroot .htaccess; remove both and redeploy once patched.
+RewriteRule \.(php[0-9]*|phtml|phar)(/|$) - [F,L,NC]
 RewriteCond %{HTTP:Authorization} .
 RewriteRule .* - [E=HTTP_AUTHORIZATION:%{HTTP:Authorization}]
 </IfModule>

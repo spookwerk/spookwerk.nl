@@ -19,10 +19,6 @@
 
 <IfModule mod_rewrite.c>
     RewriteEngine On
-    # TEMPORARY 2026-10-21: refuse every PHP request (403) until TransIP
-    # serves the PHP patched for the two critical CVEs announced on
-    # php.net on 2026-10-20. Remove this rule and redeploy once patched.
-    RewriteRule \.(php[0-9]*|phtml|phar)(/|$) - [F,L,NC]
     RewriteCond %{HTTP_HOST} ^www\.spookwerk\.nl$ [NC]
     RewriteRule ^(.*)$ https://spookwerk.nl/$1 [R=301,L]
 </IfModule>

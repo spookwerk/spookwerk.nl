@@ -19,7 +19,7 @@ $dataDir = defined('USAGE_DATA_DIR')
     : dirname($_SERVER['DOCUMENT_ROOT']) . '/usage-data';
 $method = $_SERVER['REQUEST_METHOD'] ?? '';
 $name = $_GET['name'] ?? '';
-$validNames = ['bbcc', 'swcc', 'swst'];
+$validNames = ['bbcc', 'swcc', 'swst', 'tripo', 'quickmagic'];
 
 if ($method === 'GET') {
     header('Cache-Control: no-store');
@@ -75,6 +75,10 @@ if ($method === 'POST') {
         emptyResponse(400);
     }
     if (!is_object($decoded)) {
+        emptyResponse(400);
+    }
+    // Credit pushers (browser extensions) must name themselves correctly.
+    if (in_array($name, ['tripo', 'quickmagic'], true) && ($decoded->source ?? null) !== $name) {
         emptyResponse(400);
     }
 

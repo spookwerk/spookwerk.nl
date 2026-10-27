@@ -41,6 +41,10 @@
   .age{font-size:10px;flex:none;white-space:nowrap}
   .stale{font-size:10px;color:var(--danger);flex:none}
   .nodata{font-size:11px;color:var(--danger);padding:6px 0 2px}
+  .credits{display:flex;align-items:baseline;flex-wrap:wrap;gap:4px 10px}
+  .credit-amount{font-size:20px;font-weight:500;font-variant-numeric:tabular-nums}
+  .credit-caption,.credit-deadline{font-size:11px}
+  .credit-detail{font-size:10px;color:var(--muted);margin-top:4px}
   /* Mobile first: panels stack. Side by side once there is room for them. */
   .panels{display:flex;flex-direction:column;gap:7px}
   @media (min-width:480px){ .panels{flex-direction:row;flex-wrap:wrap;gap:8px 10px;align-items:center} }
@@ -82,13 +86,16 @@
 
 // Top to bottom SWST, SWCC, BBCC. The Mac app stacks its rows bottom-up with
 // BBCC as the main row at the bottom; this is that same order, read downwards.
+// The two credit feeds follow; the Mac app has no rows for them.
 var FEEDS = [
   { id:"swst", file:"./swst.json", label:"SWST", sub:"Stanley · OpenAI Codex" },
   { id:"swcc", file:"./swcc.json", label:"SWCC", sub:"Spookwerk · Claude" },
-  { id:"bbcc", file:"./bbcc.json", label:"BBCC", sub:"Work · Claude" }
+  { id:"bbcc", file:"./bbcc.json", label:"BBCC", sub:"Work · Claude" },
+  { id:"tripo", file:"./tripo.json", label:"TRIPO", sub:"Monthly credits", kind:"credits" },
+  { id:"quickmagic", file:"./quickmagic.json", label:"QUICKMAGIC", sub:"Monthly credits", kind:"credits", hasReserve:true }
 ];
 
-// API mode: one endpoint next to this page answers for all three accounts at
+// API mode: one endpoint next to this page answers for all feeds at
 // once. Relative, so the same file works wherever the directory is mounted.
 var API_URL   = "./api.php?name=all";
 var TOKEN_KEY = "usage.readToken";
@@ -98,9 +105,10 @@ var TICK_MS    = 30000;            // repaint-only cadence (bars + "ago" labels)
 var STALE_MS   = 3 * 60 * 1000;    // footer turns red/"stale" once fetched data is this old
 var H5 = 5 * 3600 * 1000;          // 5-hour burst window
 var D7 = 7 * 24 * 3600 * 1000;     // 7-day weekly window
+var DAY = 24 * 3600 * 1000;
 var MON = ["JAN","FEB","MAR","APR","MAY","JUN","JUL","AUG","SEP","OCT","NOV","DEC"];
 
-var state = {};                    // feed id -> {ok, stats, checkedAt, stale}
+var state = {};                    // feed id -> {ok, stats | credits, checkedAt, stale}
 var lastFetchOK  = null;           // Date of the last cycle() that parsed at least one account
 var lastFetchTry = null;           // Date of the last cycle() attempt, success or failure
 var fetchInFlight = false;         // guards overlapping cycle() calls (button/timers/foreground)
@@ -166,6 +174,20 @@ function mapResponseToStats(r){
     }
   }
   return s;
+}
+
+// Credit balances are amounts, not utilization percentages. Reject a malformed
+// amount instead of making an unavailable reading look like zero credits. The
+// reserve is a side figure: the extension sends null when the site leaves it
+// out, and that must not cost us the monthly balance, so it degrades to null.
+function mapCreditResponse(r, feed){
+  if (r.source !== feed.id || !isAmount(r.expiring)) return null;
+  return { expiring:r.expiring, at:parseDate(r.reset_at),
+           reserve:isAmount(r.reserve) ? r.reserve : null };
+}
+
+function isAmount(v){
+  return typeof v === "number" && Number.isFinite(v) && v >= 0;
 }
 
 // --- formatting ----------------------------------------------------------
@@ -252,6 +274,41 @@ function panel(title, w, durMs){
   return p;
 }
 
+function creditPanel(credits, feed){
+  var body = el("div");
+  var line = el("div","credits");
+  var remaining = credits.at ? credits.at.getTime() - Date.now() : null;
+  var resetDue = remaining !== null && remaining <= 0;
+  // Any unspent monthly credits are worth a reminder in the final week.
+  // Reserve credits never affect the warning colour.
+  var color = credits.expiring > 0 && remaining > 0 && remaining <= D7
+    ? (remaining <= 2 * DAY ? "var(--danger)" : "var(--warning)")
+    : "var(--primary)";
+  if (resetDue) color = "var(--muted)";
+  var amount = el("span","credit-amount",credits.expiring.toLocaleString());
+  amount.style.color = color;
+  line.append(amount);
+  line.append(el("span","credit-caption",resetDue ? "last monthly balance" : "monthly credits left"));
+  var deadline = credits.at
+    ? (resetDue ? "reset due" : "expires in " + (remaining < DAY
+        ? (remaining < 3600000 ? "<1h" : Math.ceil(remaining / 3600000) + "h")
+        : Math.ceil(remaining / DAY) + "d"))
+    : "reset unknown";
+  var expiry = el("span","credit-deadline",deadline);
+  expiry.style.color = color;
+  line.append(expiry);
+  body.append(line);
+  if (credits.at){
+    var reset = el("div","credit-detail","Resets " + formatResetTime(credits.at));
+    reset.title = credits.at.toLocaleString();
+    body.append(reset);
+  }
+  if (feed.hasReserve) body.append(el("div","credit-detail", credits.reserve === null
+    ? "Reserve unknown"
+    : "Reserve " + credits.reserve.toLocaleString() + " · does not expire"));
+  return body;
+}
+
 function renderRow(feed){
   var st = state[feed.id];
   var row = el("section","row");
@@ -264,15 +321,27 @@ function renderRow(feed){
     var age = el("span","age");
     var d = Date.now() - st.checkedAt.getTime();
     age.textContent = "updated " + ageText(d);
-    age.style.color = ageColor(d);
+    // A credit extension only pushes while its site is open in a tab, and the
+    // balance only moves while it is open, so an old reading is the normal
+    // state, not a dead collector. Age is shown, never alarmed on.
+    age.style.color = feed.kind === "credits" ? "var(--muted)" : ageColor(d);
     head.append(age);
   }
-  if (st && st.stale) head.append(el("span","stale","stale"));
+  // What does make a credit reading stale is the monthly reset passing after
+  // it was taken: the balance it shows has since been replaced.
+  var creditStale = feed.kind === "credits" && st && st.ok &&
+    st.credits.at && st.credits.at.getTime() <= Date.now();
+  if (st && (st.stale || creditStale)) head.append(el("span","stale","stale"));
   row.append(head);
 
   // Failed fetch or missing file: keep the label and drop the panels, so the
   // layout does not jump when one collector dies.
   if (!st || !st.ok){ row.append(el("div","nodata","no data")); return row; }
+
+  if (feed.kind === "credits"){
+    row.append(creditPanel(st.credits, feed));
+    return row;
+  }
 
   var panels = el("div","panels");
   panels.append(panel("5HR", st.stats.five, H5));
@@ -339,7 +408,17 @@ function readToken(){
 // used when the payload carries no checked_at: the file's mtime in file mode,
 // the envelope's received_at in API mode. (The BBCC feed is the one that has
 // always needed it — a different collector writes it.)
-function feedState(json, fallbackAt){
+function feedState(json, fallbackAt, feed){
+  if (feed.kind === "credits"){
+    var credits = mapCreditResponse(json, feed);
+    if (!credits) return { ok:false };
+    var sentAt = parseDate(json.sent_at) || fallbackAt;
+    return {
+      ok:true, credits:credits,
+      checkedAt: sentAt && !isNaN(sentAt.getTime()) ? sentAt : null,
+      stale:json.stale === true
+    };
+  }
   var checkedAt = parseDate(json.checked_at) || fallbackAt;
   return {
     ok: true,
@@ -354,7 +433,7 @@ function load(feed){
     if (!res.ok) throw new Error(feed.id + " HTTP " + res.status);
     var lm = res.headers.get("Last-Modified");
     return res.json().then(function(json){
-      state[feed.id] = feedState(json, lm ? new Date(lm) : null);
+      state[feed.id] = feedState(json, lm ? new Date(lm) : null, feed);
       return true;
     });
   }).catch(function(){
@@ -363,7 +442,7 @@ function load(feed){
   });
 }
 
-// File mode: three sibling JSON files, one fetch each, unchanged.
+// File mode: sibling JSON files, one fetch each.
 function loadFiles(){
   return Promise.all(FEEDS.map(load)).then(function(results){
     if (results.some(Boolean)){ lastFetchOK = new Date(); footNote = null; }
@@ -373,7 +452,7 @@ function loadFiles(){
   });
 }
 
-// API mode: one request covers all three accounts. An account whose `data` is
+// API mode: one request covers every feed. A feed whose `data` is
 // null gets exactly the rendering a missing sibling file gets — label kept,
 // red dot, no panels.
 function loadApi(token){
@@ -386,7 +465,7 @@ function loadApi(token){
       FEEDS.forEach(function(feed){
         var slot = env ? env[feed.id] : null;
         state[feed.id] = slot && slot.data
-          ? feedState(slot.data, parseDate(slot.received_at))
+          ? feedState(slot.data, parseDate(slot.received_at), feed)
           : { ok:false };
       });
       lastFetchOK = new Date();
